@@ -1,115 +1,86 @@
 import pandas as pd
-import numpy as np
-from sklearn.preprocessing import LabelEncoder
+import pickle
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.calibration import CalibratedClassifierCV
+from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report
 
-# ----------------------------
-# 1. Load dataset
-# ----------------------------
-data_file = "matches.csv"  # replace with your dataset path
-df = pd.read_csv(data_file)
+# -----------------------------
+# Load multiple seasons
+# -----------------------------
+files = ["PL_2021_2022.csv", "PL_2022_2023.csv", "PL_2023_2024.csv", "PL_2024_2025.csv"]
+df_list = [pd.read_csv(f) for f in files]
+df = pd.concat(df_list, ignore_index=True)
+df["Date"] = pd.to_datetime(df["Date"], dayfirst=True)
 
-# Convert Date to datetime
-df['Date'] = pd.to_datetime(df['Date'], dayfirst=True)
-df = df.sort_values('Date')
-
-# ----------------------------
-# 2. Encode teams and results
-# ----------------------------
-teams = pd.concat([df['HomeTeam'], df['AwayTeam']]).unique()
+# -----------------------------
+# Encode team names
+# -----------------------------
+teams = pd.concat([df["HomeTeam"], df["AwayTeam"]]).unique()
 le_team = LabelEncoder()
 le_team.fit(teams)
 
-df['HomeTeamEnc'] = le_team.transform(df['HomeTeam']).astype(int)
-df['AwayTeamEnc'] = le_team.transform(df['AwayTeam']).astype(int)
-df['FTREnc'] = df['FTR'].map({'H':0,'D':1,'A':2})
+# -----------------------------
+# Feature: last 5 games stats
+# -----------------------------
+def team_last_5_stats(team, date, n=5):
+    past_home = df[(df["HomeTeam"] == team) & (df["Date"] < date)].sort_values("Date", ascending=False).head(n)
+    past_away = df[(df["AwayTeam"] == team) & (df["Date"] < date)].sort_values("Date", ascending=False).head(n)
+    
+    recent = pd.concat([
+        past_home[["FTHG","FTAG","FTR"]],
+        past_away[["FTAG","FTHG","FTR"]].rename(columns={"FTAG":"FTHG","FTHG":"FTAG"})
+    ])
+    
+    goals_scored = recent["FTHG"].mean() if not recent.empty else 0
+    goals_conceded = recent["FTAG"].mean() if not recent.empty else 0
+    form_points = recent["FTR"].apply(lambda x: 3 if x=="H" else 1 if x=="D" else 0).sum() if not recent.empty else 0
+    
+    return goals_scored, goals_conceded, form_points
 
-# ----------------------------
-# 3. Last 5 games form
-# ----------------------------
-df['HomeGFLast5'] = df.groupby('HomeTeam')['FTHG'].transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
-df['HomeGALast5'] = df.groupby('HomeTeam')['FTAG'].transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
-df['AwayGFLast5'] = df.groupby('AwayTeam')['FTAG'].transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
-df['AwayGALast5'] = df.groupby('AwayTeam')['FTHG'].transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
+# -----------------------------
+# Prepare training data
+# -----------------------------
+feature_rows = []
+labels = []
 
-# ----------------------------
-# 4. Head-to-head last 5 matches
-# ----------------------------
-def compute_h2h(row, df, n=5):
-    home = row['HomeTeam']
-    away = row['AwayTeam']
-    mask = (((df['HomeTeam']==home) & (df['AwayTeam']==away)) |
-            ((df['HomeTeam']==away) & (df['AwayTeam']==home)))
-    last_matches = df[mask].loc[df['Date'] < row['Date']].tail(n)
-    if last_matches.empty:
-        return pd.Series([0.0, 0.0])
-    home_goals = last_matches.apply(lambda x: x['FTHG'] if x['HomeTeam']==home else x['FTAG'], axis=1).mean()
-    away_goals = last_matches.apply(lambda x: x['FTAG'] if x['HomeTeam']==home else x['FTHG'], axis=1).mean()
-    return pd.Series([home_goals, away_goals])
+for idx, row in df.iterrows():
+    home = row["HomeTeam"]
+    away = row["AwayTeam"]
+    date = row["Date"]
+    
+    home_stats = team_last_5_stats(home, date)
+    away_stats = team_last_5_stats(away, date)
+    
+    features = home_stats + away_stats
+    feature_rows.append(features)
+    labels.append(row["FTR"])  # H, D, A
 
-df[['H2HHome','H2HAway']] = df.apply(lambda row: compute_h2h(row, df), axis=1)
+X = pd.DataFrame(feature_rows, columns=["HG_Scored","HG_Conceded","H_Form",
+                                        "AG_Scored","AG_Conceded","A_Form"])
+y = labels
 
-# ----------------------------
-# 5. Prepare features and target
-# ----------------------------
-features = ['HomeTeamEnc','AwayTeamEnc','HomeGFLast5','HomeGALast5','AwayGFLast5','AwayGALast5','H2HHome','H2HAway']
-df_model = df.dropna(subset=features+['FTREnc'])
+# -----------------------------
+# Train/test split
+# -----------------------------
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-X = df_model[features]
-y = df_model['FTREnc']
-
-# ----------------------------
-# 6. Train/test split
-# ----------------------------
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, shuffle=True)
-
-# ----------------------------
-# 7. Train Random Forest
-# ----------------------------
-rf = RandomForestClassifier(n_estimators=200, random_state=42)
-clf = CalibratedClassifierCV(rf)
+# -----------------------------
+# Train classifier
+# -----------------------------
+clf = RandomForestClassifier(n_estimators=200, random_state=42)
 clf.fit(X_train, y_train)
 
-# ----------------------------
-# 8. Function to predict future match
-# ----------------------------
-def predict_match(home_team, away_team, df, model, le_team, n_form=5):
-    home_enc = le_team.transform([home_team])[0]
-    away_enc = le_team.transform([away_team])[0]
+# -----------------------------
+# Evaluate
+# -----------------------------
+y_pred = clf.predict(X_test)
+print(classification_report(y_test, y_pred))
 
-    # Last N games form
-    home_past = df[df['HomeTeam']==home_team].sort_values('Date').tail(n_form)
-    home_gf_last5 = home_past['FTHG'].mean() if not home_past.empty else 0
-    home_ga_last5 = home_past['FTAG'].mean() if not home_past.empty else 0
+# -----------------------------
+# Save model
+# -----------------------------
+with open("premier_league_model.pkl", "wb") as f:
+    pickle.dump((clf, le_team), f)
 
-    away_past = df[df['AwayTeam']==away_team].sort_values('Date').tail(n_form)
-    away_gf_last5 = away_past['FTAG'].mean() if not away_past.empty else 0
-    away_ga_last5 = away_past['FTHG'].mean() if not away_past.empty else 0
-
-    # Head-to-head last N games
-    mask = (((df['HomeTeam']==home_team) & (df['AwayTeam']==away_team)) |
-            ((df['HomeTeam']==away_team) & (df['AwayTeam']==home_team)))
-    h2h = df[mask].sort_values('Date').tail(n_form)
-    h2h_home = h2h.apply(lambda x: x['FTHG'] if x['HomeTeam']==home_team else x['FTAG'], axis=1).mean() if not h2h.empty else 0
-    h2h_away = h2h.apply(lambda x: x['FTAG'] if x['HomeTeam']==home_team else x['FTHG'], axis=1).mean() if not h2h.empty else 0
-
-    # Feature vector
-    X_new = np.array([[home_enc, away_enc, home_gf_last5, home_ga_last5,
-                       away_gf_last5, away_ga_last5, h2h_home, h2h_away]])
-    
-    prob = model.predict_proba(X_new)[0]
-    result_map = {0:'Home Win',1:'Draw',2:'Away Win'}
-    return {result_map[i]: round(p,2) for i,p in enumerate(prob)}
-
-# ----------------------------
-# 9. Interactive example
-# ----------------------------
-while True:
-    home = input("Enter Home Team (or 'exit' to quit): ")
-    if home.lower() == 'exit':
-        break
-    away = input("Enter Away Team: ")
-    probs = predict_match(home, away, df, clf, le_team)
-    print(f"Predicted probabilities: {probs}\n")
+print("Model retrained and saved to premier_league_model.pkl")
