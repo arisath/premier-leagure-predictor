@@ -91,16 +91,17 @@ streamlit run app.py
 ## Project Structure
 
 ```
-.
-├── app.py                  # Main Streamlit app
-├── config.py               # API key configuration
-├── premier_league_model.pkl # Pretrained ML model
-├── PL_2021_2022.csv         # Historical data
-├── PL_2022_2023.csv
-├── PL_2023_2024.csv
-├── PL_2024_2025.csv
-├── requirements.txt        # Python dependencies
-└── README.md               # This file
+premier-league-predictor/
+│
+├─ app.py                   # Main Streamlit app
+├─ premier_league_model.pkl  # Trained ML model
+├─ config.py                # Contains API_KEY for football-data.org
+├─ data/
+│   ├─ PL_2021_2022.csv
+│   ├─ PL_2022_2023.csv
+│   ├─ PL_2023_2024.csv
+│   └─ PL_2024_2025.csv
+└─ README.md
 ```
 
 ---
