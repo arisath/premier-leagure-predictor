@@ -17,7 +17,7 @@ A web app that predicts the outcomes of upcoming Premier League matches based on
 
 ## Demo
 
-![App Screenshot](demo_screenshot.png)
+![App Screenshot](demo.png)
 
 *Example output showing team crests, last 5 games form, and predicted probabilities.*
 
