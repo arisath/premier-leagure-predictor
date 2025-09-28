@@ -52,7 +52,12 @@ def team_last_5_stats(team, date, n=5):
     goals_conceded = recent["FTAG"].mean() if not recent.empty else 0
     form_points = recent["FTR"].apply(lambda x: 3 if x=="H" else 1 if x=="D" else 0).sum() if not recent.empty else 0
 
-    return goals_scored, goals_conceded, form_points, recent["FTR"].tolist()
+    # Ensure exactly n FTRs
+    ftr_list = recent["FTR"].tolist()
+    if len(ftr_list) < n:
+        ftr_list += [""] * (n - len(ftr_list))
+
+    return goals_scored, goals_conceded, form_points, ftr_list
 
 # -----------------------------
 # Predictor
@@ -108,8 +113,13 @@ if st.button("🔮 Predict Next 10 Fixture Odds"):
             # Run prediction
             probs, home_stats, away_stats = predict_match(home, away, date)
 
-            # Header with icons
-            st.markdown(f"### ![]({home_icon}) {home} vs ![]({away_icon}) {away}")
+            # Header with icons (fixed size)
+            st.markdown(f"""
+            <h3>
+                <img src="{home_icon}" height="40" style="vertical-align:middle; margin-right:5px;"> {home} vs
+                <img src="{away_icon}" height="40" style="vertical-align:middle; margin-left:5px;"> {away}
+            </h3>
+            """, unsafe_allow_html=True)
             st.markdown(f"📅 {date.strftime('%d/%m/%Y %H:%M')}")
 
             # Stats & Form
@@ -120,7 +130,7 @@ if st.button("🔮 Predict Next 10 Fixture Odds"):
                 # Heatmap with 5 equal segments
                 fig_form = go.Figure()
                 for idx, ftr in enumerate(home_stats[3]):
-                    color = "green" if ftr=="H" else "yellow" if ftr=="D" else "red"
+                    color = "green" if ftr=="H" else "yellow" if ftr=="D" else "red" if ftr=="A" else "lightgray"
                     fig_form.add_trace(go.Bar(
                         x=[1/5],
                         y=[1],
@@ -139,7 +149,7 @@ if st.button("🔮 Predict Next 10 Fixture Odds"):
                           delta=f"{away_stats[0]:.1f} GS / {away_stats[1]:.1f} GC")
                 fig_form2 = go.Figure()
                 for idx, ftr in enumerate(away_stats[3]):
-                    color = "green" if ftr=="H" else "yellow" if ftr=="D" else "red"
+                    color = "green" if ftr=="H" else "yellow" if ftr=="D" else "red" if ftr=="A" else "lightgray"
                     fig_form2.add_trace(go.Bar(
                         x=[1/5],
                         y=[1],
@@ -156,7 +166,7 @@ if st.button("🔮 Predict Next 10 Fixture Odds"):
             # Odds chart
             fig = go.Figure(go.Bar(
                 x=list(probs.values()),
-                y=list(probs.keys()),
+                y=["Home Win","Draw","Away Win"],
                 orientation="h",
                 marker_color=["green", "gray", "red"],
                 text=[f"{p*100:.1f}%" for p in probs.values()],
