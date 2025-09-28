@@ -69,7 +69,7 @@ pip install -r requirements.txt
 API_KEY = "YOUR_API_KEY"
 ```
 
-2. Ensure you have the historical CSV data files in the project folder:
+2. Ensure you have the historical CSV data files in the project data folder:
 
 ```
 PL_2021_2022.csv
