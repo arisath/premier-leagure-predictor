@@ -10,7 +10,7 @@ from config import API_KEY  # store API key separately
 # -----------------------------
 # Load historical data
 # -----------------------------
-files = ["PL_2021_2022.csv", "PL_2022_2023.csv", "PL_2023_2024.csv", "PL_2024_2025.csv"]
+files = ["data/PL_2021_2022.csv", "data/PL_2022_2023.csv", "data/PL_2023_2024.csv", "data/PL_2024_2025.csv"]
 df_list = [pd.read_csv(f) for f in files]
 df = pd.concat(df_list, ignore_index=True)
 df["Date"] = pd.to_datetime(df["Date"], dayfirst=True)
