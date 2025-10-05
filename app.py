@@ -7,6 +7,8 @@ from rapidfuzz import process
 import plotly.graph_objects as go
 from config import API_KEY, ODDS_API_KEY  # store API keys separately
 
+
+
 # -----------------------------
 # Load historical data
 # -----------------------------
@@ -151,13 +153,39 @@ def fetch_odds_for_event(event_id, sport="soccer_epl", regions="uk", markets="h2
 # -----------------------------
 # Streamlit UI
 # -----------------------------
-st.set_page_config(page_title="Premier League Predictor", page_icon="⚽", layout="centered")
-st.title("⚽ Premier League Predictor")
+import streamlit as st
+import pandas as pd
+import requests
+from datetime import datetime, timezone
+import pickle
+from rapidfuzz import process
+import plotly.graph_objects as go
+import base64
 
+# -----------------------------
+# Load bookmaker icons as base64
+# -----------------------------
+def load_icon_base64(path):
+    """Load local PNG and return a base64 string suitable for Plotly."""
+    with open(path, "rb") as f:
+        encoded = base64.b64encode(f.read()).decode()
+    return f"data:image/png;base64,{encoded}"
+
+BOOKMAKER_ICONS = {
+    "Smarkets": load_icon_base64("img/smarkets.png"),
+    "Betfair": load_icon_base64("img/betfair.png"),
+    "Paddy Power": load_icon_base64("img/paddy_power.png")
+}
+
+# -----------------------------
+# Constants
+# -----------------------------
 FIXED_ORDER = ["Home Win", "Draw", "Away Win"]
 
+# -----------------------------
+# Helper functions
+# -----------------------------
 def format_model_odds(probs):
-    """Return a DataFrame for model odds in fixed order."""
     data = []
     for outcome in FIXED_ORDER:
         prob = probs.get(outcome, 0)
@@ -171,31 +199,77 @@ def format_model_odds(probs):
 
 def format_bookmaker_odds_fixed(bookmaker):
     """
-    Return a DataFrame with fixed order Home/Draw/Away for a bookmaker.
-    Ignores the outcome names and just uses the order in the 'h2h' market:
-    [Home team, Draw, Away team].
+    Returns fixed order Home/Draw/Away for a bookmaker.
     """
     market = next((mk for mk in bookmaker.get("markets", []) if mk.get("key") == "h2h"), None)
     if not market:
         return pd.DataFrame({
-            "Outcome": ["Home Win", "Draw", "Away Win"],
-            "Decimal Odds": ["N/A", "N/A", "N/A"]
+            "Outcome": FIXED_ORDER,
+            "Decimal Odds": ["N/A"]*3
         })
 
-    # The Odds API 'outcomes' list is usually in order: Home, Draw, Away
     outcomes_list = market.get("outcomes", [])
     decimal_odds = []
     for idx in range(3):
         try:
             price = outcomes_list[idx]["price"]
-            # Format without trailing zeros
             price = f"{price:.2f}".rstrip('0').rstrip('.') if isinstance(price, float) else price
             decimal_odds.append(price)
         except IndexError:
             decimal_odds.append("N/A")
 
     return pd.DataFrame({
-        "Outcome": ["Home Win", "Draw", "Away Win"],
+        "Outcome": FIXED_ORDER,
+        "Decimal Odds": decimal_odds
+    })
+
+# -----------------------------
+# Streamlit UI
+# -----------------------------
+st.set_page_config(page_title="Premier League Predictor", page_icon="⚽", layout="centered")
+st.title("⚽ Premier League Predictor")
+
+FIXED_ORDER = ["Home Win", "Draw", "Away Win"]
+
+# Bookmaker icons folder
+BOOKMAKER_ICONS = {
+    "Smarkets": "img/smarkets.png",
+    "Betfair": "img/betfair.png",
+    "Paddy Power": "img/paddy_power.png"
+}
+
+def format_model_odds(probs):
+    data = []
+    for outcome in FIXED_ORDER:
+        prob = probs.get(outcome, 0)
+        odds = 1/prob if prob > 0 else float('inf')
+        data.append({
+            "Outcome": outcome,
+            "Probability": f"{prob*100:.1f}%",
+            "Model Odds": f"{odds:.2f}".rstrip('0').rstrip('.') if odds != float('inf') else "∞"
+        })
+    return pd.DataFrame(data)
+
+def format_bookmaker_odds_fixed(bookmaker):
+    market = next((mk for mk in bookmaker.get("markets", []) if mk.get("key") == "h2h"), None)
+    if not market:
+        return pd.DataFrame({
+            "Outcome": FIXED_ORDER,
+            "Decimal Odds": ["N/A"]*3
+        })
+
+    outcomes_list = market.get("outcomes", [])
+    decimal_odds = []
+    for idx in range(3):
+        try:
+            price = outcomes_list[idx]["price"]
+            price = f"{price:.2f}".rstrip('0').rstrip('.') if isinstance(price, float) else price
+            decimal_odds.append(price)
+        except IndexError:
+            decimal_odds.append("N/A")
+
+    return pd.DataFrame({
+        "Outcome": FIXED_ORDER,
         "Decimal Odds": decimal_odds
     })
 
@@ -213,9 +287,9 @@ if st.button("🔮 Predict Next 10 Fixture Odds"):
             away_icon = match["awayTeam"].get("crest")
             date = datetime.fromisoformat(match["utcDate"][:-1])
 
-            # Model prediction
             probs, home_stats, away_stats = predict_match(home, away, date)
 
+            # Header
             st.markdown(f"""
             <h3>
                 <img src="{home_icon}" height="40" style="vertical-align:middle; margin-right:5px;"> {home} vs
@@ -224,56 +298,101 @@ if st.button("🔮 Predict Next 10 Fixture Odds"):
             """, unsafe_allow_html=True)
             st.markdown(f"📅 {date.strftime('%d/%m/%Y %H:%M')}")
 
+            # Last 5 games form
             col1, col2 = st.columns(2)
             with col1:
                 st.metric(label=f"{home} (last 5)", value=f"{home_stats[2]} pts",
                           delta=f"{home_stats[0]:.1f} GS / {home_stats[1]:.1f} GC")
+                fig_form = go.Figure()
+                for idx_ftr, ftr in enumerate(home_stats[3]):
+                    color = "green" if ftr=="H" else "yellow" if ftr=="D" else "red" if ftr=="A" else "lightgray"
+                    fig_form.add_trace(go.Bar(
+                        x=[1/5],
+                        y=[1],
+                        orientation="h",
+                        marker_color=color,
+                        base=[idx_ftr/5],
+                        showlegend=False,
+                        text=ftr,
+                        textposition="inside"
+                    ))
+                fig_form.update_layout(height=50, yaxis=dict(showticklabels=False), xaxis=dict(showticklabels=False, range=[0,1]), margin=dict(l=0,r=0,t=0,b=0))
+                st.plotly_chart(fig_form, use_container_width=True)
             with col2:
                 st.metric(label=f"{away} (last 5)", value=f"{away_stats[2]} pts",
                           delta=f"{away_stats[0]:.1f} GS / {away_stats[1]:.1f} GC")
+                fig_form2 = go.Figure()
+                for idx_ftr, ftr in enumerate(away_stats[3]):
+                    color = "green" if ftr=="H" else "yellow" if ftr=="D" else "red" if ftr=="A" else "lightgray"
+                    fig_form2.add_trace(go.Bar(
+                        x=[1/5],
+                        y=[1],
+                        orientation="h",
+                        marker_color=color,
+                        base=[idx_ftr/5],
+                        showlegend=False,
+                        text=ftr,
+                        textposition="inside"
+                    ))
+                fig_form2.update_layout(height=50, yaxis=dict(showticklabels=False), xaxis=dict(showticklabels=False, range=[0,1]), margin=dict(l=0,r=0,t=0,b=0))
+                st.plotly_chart(fig_form2, use_container_width=True)
 
-            # --- Combine model and bookmaker odds for grouped bar chart ---
-            odds_sources = ["Model"]  # start with model
+            # Model odds
             odds_df = format_model_odds(probs)
-            values = [ [float(row["Model Odds"]) if row["Model Odds"] != "∞" else 0 for row in odds_df.to_dict("records")] ]
 
-            # Get bookmaker odds using event ID
+            # Bookmaker odds
             event_id = find_event_id(home, away, events)
+            bookmaker_dfs = []
+            bk_names = []
+            colors = ["green", "orange", "red"]
             if event_id:
                 event_odds = fetch_odds_for_event(event_id)
                 if event_odds:
-                    top_bookmakers = event_odds.get("bookmakers", [])[:3]
-                    for bk in top_bookmakers:
+                    for bk in event_odds.get("bookmakers", [])[:3]:
                         bk_df = format_bookmaker_odds_fixed(bk)
-                        odds_sources.append(bk.get("title", "Bookmaker"))
-                        values.append([float(x) if x != "N/A" else 0 for x in bk_df["Decimal Odds"]])
-                else:
-                    st.info("No bookmaker odds available yet for this event.")
-            else:
-                st.info("No matching event found for this fixture.")
+                        bookmaker_dfs.append(bk_df)
+                        bk_names.append(bk.get("title", f"Bookmaker {len(bk_names)+1}"))
 
-            # --- Plot grouped bar chart ---
+            # Plot grouped bar chart
             fig = go.Figure()
-            bar_width = 0.15
-            n_sources = len(odds_sources)
-            offsets = [(-bar_width*n_sources/2)+(bar_width/2)+bar_width*i for i in range(n_sources)]
-
-            for idx, source in enumerate(odds_sources):
+            # Model
+            fig.add_trace(go.Bar(
+                x=FIXED_ORDER,
+                y=[float(row["Model Odds"]) for row in odds_df.to_dict('records')],
+                name="Model",
+                marker_color="blue"
+            ))
+            # Bookmakers
+            for idx, bk_df in enumerate(bookmaker_dfs):
                 fig.add_trace(go.Bar(
                     x=FIXED_ORDER,
-                    y=values[idx],
-                    name=source,
-                    width=bar_width,
-                    offset=offsets[idx]
+                    y=[float(o) if o != "N/A" else 0 for o in bk_df["Decimal Odds"]],
+                    name=bk_names[idx],
+                    marker_color=colors[idx % len(colors)]
                 ))
 
             fig.update_layout(
-                title="Model Odds vs Bookmaker Odds",
-                yaxis=dict(title="Decimal Odds"),
-                barmode="group",
+                barmode='group',
+                title="Model vs Bookmaker Odds",
+                xaxis_title="Outcome",
+                yaxis_title="Decimal Odds",
+                margin=dict(l=60, r=60, t=50, b=50),
                 height=400
             )
+
             st.plotly_chart(fig, use_container_width=True)
 
-            st.divider()
+            # Show bookmaker icons and names below plot, aligned
+            if bk_names:
+                cols_icons = st.columns(len(bk_names))
+                cols_names = st.columns(len(bk_names))
+                for idx, bk_name in enumerate(bk_names):
+                    color = colors[idx % len(colors)]
+                    icon_path = BOOKMAKER_ICONS.get(bk_name)
+                    # Icon row
+                    if icon_path:
+                        cols_icons[idx].image(icon_path, width=50)
+                    # Name row, centered, colored same as bar
+                    cols_names[idx].markdown(f"<div style='text-align:center; color:{color}'>{bk_name}</div>", unsafe_allow_html=True)
 
+            st.divider()
