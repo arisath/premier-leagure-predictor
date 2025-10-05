@@ -157,6 +157,7 @@ st.title("⚽ Premier League Predictor")
 FIXED_ORDER = ["Home Win", "Draw", "Away Win"]
 
 def format_model_odds(probs):
+    """Return a DataFrame for model odds in fixed order."""
     data = []
     for outcome in FIXED_ORDER:
         prob = probs.get(outcome, 0)
@@ -164,31 +165,39 @@ def format_model_odds(probs):
         data.append({
             "Outcome": outcome,
             "Probability": f"{prob*100:.1f}%",
-            "Model Odds": format_decimal_odds(odds) if odds != float('inf') else "∞"
+            "Model Odds": f"{odds:.2f}".rstrip('0').rstrip('.') if odds != float('inf') else "∞"
         })
     return pd.DataFrame(data)
 
-def format_decimal_odds(odds):
-    try:
-        return str(int(odds)) if float(odds).is_integer() else str(odds)
-    except:
-        return "N/A"
-
-def format_bookmaker_odds_by_position(bookmaker):
+def format_bookmaker_odds_fixed(bookmaker):
+    """
+    Return a DataFrame with fixed order Home/Draw/Away for a bookmaker.
+    Ignores the outcome names and just uses the order in the 'h2h' market:
+    [Home team, Draw, Away team].
+    """
     market = next((mk for mk in bookmaker.get("markets", []) if mk.get("key") == "h2h"), None)
-    if not market or not market.get("outcomes"):
-        return pd.DataFrame([{"Outcome": o, "Decimal Odds": "N/A"} for o in FIXED_ORDER])
+    if not market:
+        return pd.DataFrame({
+            "Outcome": ["Home Win", "Draw", "Away Win"],
+            "Decimal Odds": ["N/A", "N/A", "N/A"]
+        })
 
-    outcomes = market["outcomes"]
-    while len(outcomes) < 3:
-        outcomes.append({"name": "N/A", "price": "N/A"})
+    # The Odds API 'outcomes' list is usually in order: Home, Draw, Away
+    outcomes_list = market.get("outcomes", [])
+    decimal_odds = []
+    for idx in range(3):
+        try:
+            price = outcomes_list[idx]["price"]
+            # Format without trailing zeros
+            price = f"{price:.2f}".rstrip('0').rstrip('.') if isinstance(price, float) else price
+            decimal_odds.append(price)
+        except IndexError:
+            decimal_odds.append("N/A")
 
-    data = [
-        {"Outcome": "Home Win", "Decimal Odds": format_decimal_odds(outcomes[0]["price"])},
-        {"Outcome": "Draw", "Decimal Odds": format_decimal_odds(outcomes[1]["price"])},
-        {"Outcome": "Away Win", "Decimal Odds": format_decimal_odds(outcomes[2]["price"])},
-    ]
-    return pd.DataFrame(data)
+    return pd.DataFrame({
+        "Outcome": ["Home Win", "Draw", "Away Win"],
+        "Decimal Odds": decimal_odds
+    })
 
 if st.button("🔮 Predict Next 10 Fixture Odds"):
     matches = get_next_matches(10)
@@ -204,9 +213,9 @@ if st.button("🔮 Predict Next 10 Fixture Odds"):
             away_icon = match["awayTeam"].get("crest")
             date = datetime.fromisoformat(match["utcDate"][:-1])
 
+            # Model prediction
             probs, home_stats, away_stats = predict_match(home, away, date)
 
-            # Header with icons
             st.markdown(f"""
             <h3>
                 <img src="{home_icon}" height="40" style="vertical-align:middle; margin-right:5px;"> {home} vs
@@ -215,86 +224,56 @@ if st.button("🔮 Predict Next 10 Fixture Odds"):
             """, unsafe_allow_html=True)
             st.markdown(f"📅 {date.strftime('%d/%m/%Y %H:%M')}")
 
-            # Stats & form
             col1, col2 = st.columns(2)
             with col1:
                 st.metric(label=f"{home} (last 5)", value=f"{home_stats[2]} pts",
                           delta=f"{home_stats[0]:.1f} GS / {home_stats[1]:.1f} GC")
-                # Last 5 games form
-                fig_home_form = go.Figure()
-                for idx, ftr in enumerate(home_stats[3]):
-                    color = "green" if ftr=="H" else "yellow" if ftr=="D" else "red" if ftr=="A" else "lightgray"
-                    fig_home_form.add_trace(go.Bar(
-                        x=[1/5],
-                        y=[1],
-                        orientation="h",
-                        marker_color=color,
-                        base=[idx/5],
-                        showlegend=False,
-                        text=ftr,
-                        textposition="inside"
-                    ))
-                fig_home_form.update_layout(height=50, yaxis=dict(showticklabels=False),
-                                            xaxis=dict(showticklabels=False, range=[0,1]),
-                                            margin=dict(l=0,r=0,t=0,b=0))
-                st.plotly_chart(fig_home_form, use_container_width=True)
-
             with col2:
                 st.metric(label=f"{away} (last 5)", value=f"{away_stats[2]} pts",
                           delta=f"{away_stats[0]:.1f} GS / {away_stats[1]:.1f} GC")
-                fig_away_form = go.Figure()
-                for idx, ftr in enumerate(away_stats[3]):
-                    color = "green" if ftr=="H" else "yellow" if ftr=="D" else "red" if ftr=="A" else "lightgray"
-                    fig_away_form.add_trace(go.Bar(
-                        x=[1/5],
-                        y=[1],
-                        orientation="h",
-                        marker_color=color,
-                        base=[idx/5],
-                        showlegend=False,
-                        text=ftr,
-                        textposition="inside"
-                    ))
-                fig_away_form.update_layout(height=50, yaxis=dict(showticklabels=False),
-                                           xaxis=dict(showticklabels=False, range=[0,1]),
-                                           margin=dict(l=0,r=0,t=0,b=0))
-                st.plotly_chart(fig_away_form, use_container_width=True)
 
-            # Model odds
+            # --- Combine model and bookmaker odds for grouped bar chart ---
+            odds_sources = ["Model"]  # start with model
             odds_df = format_model_odds(probs)
-            st.table(odds_df)
+            values = [ [float(row["Model Odds"]) if row["Model Odds"] != "∞" else 0 for row in odds_df.to_dict("records")] ]
 
-            fig = go.Figure(go.Bar(
-                x=[float(row["Probability"].strip('%'))/100 for row in odds_df.to_dict('records')],
-                y=FIXED_ORDER,
-                orientation="h",
-                marker_color=["green", "gray", "red"],
-                text=[f'{row["Probability"]} | {row["Model Odds"]}' for row in odds_df.to_dict('records')],
-                textposition="outside"
-            ))
-            fig.update_layout(
-                title="Model Probabilities (with Decimal Odds)",
-                xaxis=dict(range=[0, 1], title="Probability"),
-                yaxis=dict(title="Outcome"),
-                margin=dict(l=60, r=60, t=50, b=50),
-                height=300
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-            # Bookmaker odds
+            # Get bookmaker odds using event ID
             event_id = find_event_id(home, away, events)
             if event_id:
                 event_odds = fetch_odds_for_event(event_id)
                 if event_odds:
-                    st.subheader("🏦 Bookmaker Odds (from The Odds API)")
-                    for bk in event_odds.get("bookmakers", [])[:3]:
-                        st.write(f"**{bk.get('title', 'Unknown')}**")
-                        bk_df = format_bookmaker_odds_by_position(bk)
-                        st.table(bk_df)
+                    top_bookmakers = event_odds.get("bookmakers", [])[:3]
+                    for bk in top_bookmakers:
+                        bk_df = format_bookmaker_odds_fixed(bk)
+                        odds_sources.append(bk.get("title", "Bookmaker"))
+                        values.append([float(x) if x != "N/A" else 0 for x in bk_df["Decimal Odds"]])
                 else:
                     st.info("No bookmaker odds available yet for this event.")
             else:
                 st.info("No matching event found for this fixture.")
+
+            # --- Plot grouped bar chart ---
+            fig = go.Figure()
+            bar_width = 0.15
+            n_sources = len(odds_sources)
+            offsets = [(-bar_width*n_sources/2)+(bar_width/2)+bar_width*i for i in range(n_sources)]
+
+            for idx, source in enumerate(odds_sources):
+                fig.add_trace(go.Bar(
+                    x=FIXED_ORDER,
+                    y=values[idx],
+                    name=source,
+                    width=bar_width,
+                    offset=offsets[idx]
+                ))
+
+            fig.update_layout(
+                title="Model Odds vs Bookmaker Odds",
+                yaxis=dict(title="Decimal Odds"),
+                barmode="group",
+                height=400
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
             st.divider()
 
