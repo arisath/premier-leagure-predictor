@@ -74,6 +74,7 @@ def predict_match(home_team, away_team, date):
                                      "AG_Scored", "AG_Conceded", "A_Form"])
 
     probs = clf.predict_proba(features)[0]
+    # Return as a dict (explicit order: Home Win, Draw, Away Win)
     return {"Home Win": probs[0], "Draw": probs[1], "Away Win": probs[2]}, home_stats, away_stats
 
 # -----------------------------
@@ -106,11 +107,11 @@ if st.button("🔮 Predict Next 10 Fixture Odds"):
         for i, match in enumerate(matches):
             home = match["homeTeam"]["name"]
             away = match["awayTeam"]["name"]
-            home_icon = match["homeTeam"]["crest"]
-            away_icon = match["awayTeam"]["crest"]
+            home_icon = match["homeTeam"].get("crest")
+            away_icon = match["awayTeam"].get("crest")
             date = datetime.fromisoformat(match["utcDate"][:-1])
 
-            # Run prediction
+            # Run prediction (probs is computed here and is in scope for the following code)
             probs, home_stats, away_stats = predict_match(home, away, date)
 
             # Header with icons (fixed size)
@@ -163,17 +164,36 @@ if st.button("🔮 Predict Next 10 Fixture Odds"):
                 fig_form2.update_layout(height=50, yaxis=dict(showticklabels=False), xaxis=dict(showticklabels=False, range=[0,1]), margin=dict(l=0,r=0,t=0,b=0))
                 st.plotly_chart(fig_form2, use_container_width=True, key=f"{away}_form_{i}")
 
-            # Odds chart
+            # -----------------------------
+            # Decimal odds (implied from probabilities)
+            # -----------------------------
+            # probs is a dict with keys in the order: Home Win, Draw, Away Win
+            outcomes = list(probs.keys())
+            prob_values = list(probs.values())
+
+            # Compute decimal odds; guard against zero probability
+            odds_values = [(1.0 / p) if p > 0 else float('inf') for p in prob_values]
+            odds_texts = [f"{o:.2f}" if o != float('inf') else '∞' for o in odds_values]
+
+            # Build a small table for clarity
+            odds_df = pd.DataFrame({
+                "Outcome": outcomes,
+                "Probability": [f"{p*100:.1f}%" for p in prob_values],
+                "Decimal Odds": odds_texts
+            })
+            st.table(odds_df)
+
+            # Also show a horizontal bar chart annotated with probability + decimal odds
             fig = go.Figure(go.Bar(
-                x=list(probs.values()),
-                y=["Home Win","Draw","Away Win"],
+                x=prob_values,
+                y=outcomes,
                 orientation="h",
                 marker_color=["green", "gray", "red"],
-                text=[f"{p*100:.1f}%" for p in probs.values()],
+                text=[f"{p*100:.1f}% | {odds_texts[idx]}" for idx, p in enumerate(prob_values)],
                 textposition="outside"
             ))
             fig.update_layout(
-                title="Match Outcome Probabilities",
+                title="Match Outcome Probabilities (with Decimal Odds)",
                 xaxis=dict(range=[0, 1], title="Probability"),
                 yaxis=dict(title="Outcome"),
                 margin=dict(l=60, r=60, t=50, b=50),
